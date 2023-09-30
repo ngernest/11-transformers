@@ -240,6 +240,8 @@ evalCondition _ = True
 
 -- type annotation intentionally not given
 
+evalS :: (Member (Effect.State Store) effs, Member (Effect.Error Value) effs) => 
+  Statement -> Eff effs ()
 evalS (If e s1 s2) = do
   v <- evalE e
   if evalCondition v then eval s1 else eval s2
@@ -252,10 +254,18 @@ evalS w@(While e ss) = do
   when (evalCondition v) $ do
     eval ss
     evalS w
-evalS (Try _ _ _) = error "evalS: unimplemented"
-evalS (Throw _) = error "evalS: unimplemented"
+evalS (Throw e) = do 
+  v <- evalE e
+  throwErrorValue v
+evalS (Try s x h) = 
+  catchErrorValue (eval s) (\v -> do
+    m <- getStore 
+    putStore (Map.insert x v m)
+    eval h)
 
 -- type annotation intentionally not given
+eval :: (Member (Effect.State Store) effs, Member (Effect.Error Value) effs) => 
+  Block -> Eff effs ()
 eval (Block ss) = mapM_ evalS ss
 
 {-
@@ -269,7 +279,9 @@ eval (Block ss) = mapM_ evalS ss
 --     comp = evalE e
 
 execute :: Block -> Store -> (Either Value (), Store)
-execute b st = undefined
+execute b st = Effect.run $ Effect.runState st (Effect.runError comp)
+  where 
+    comp = eval b
 
 {-
 Try out your `execute` with this operation:
@@ -334,6 +346,7 @@ tryExpr = Block [Assign "x" (Val (IntVal 0)), Assign "y" (Val (IntVal 1)), Try (
 
 -- >>> runBlock tryExpr
 -- "Result: (),  Store: fromList [(\"a\",IntVal 100),(\"e\",IntVal 1),(\"x\",IntVal 0),(\"y\",IntVal 1),(\"z\",IntVal 101)]"
+
 
 {-
 Should print
