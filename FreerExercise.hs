@@ -115,23 +115,31 @@ Expression Evaluator
 
 -}
 
-evalE :: (Member (Effect.State Store) effs) => Expression -> Eff effs Value
+-- evalE :: (Member (Effect.State Store) effs) => Expression -> Eff effs Value
+evalE :: (Member (Effect.State Store) effs, Member (Effect.Error Value) effs) => 
+  Expression -> Eff effs Value
 evalE (Var x) = do
   m <- getStore
   case Map.lookup x m of
     Just v -> return v
-    Nothing -> return NilVal -- TODO: replace with `throwErrorValue (IntVal 0)`
+    Nothing -> throwErrorValue (IntVal 0) -- TODO: replace with `throwErrorValue (IntVal 0)`
 evalE (Val v) = return v
-evalE (Op2 e1 o e2) = evalOp2 o <$> evalE e1 <*> evalE e2
+evalE (Op2 e1 o e2) = do 
+  v1 <- evalE e1 
+  v2 <- evalE e2 
+  evalOp2 o v1 v2
+  
 
 -- TODO: When you edit this function to use `throwErrorValue`, the type needs to
 -- change.
-evalOp2 Plus (IntVal i1) (IntVal i2) = IntVal (i1 + i2)
-evalOp2 Minus (IntVal i1) (IntVal i2) = IntVal (i1 - i2)
-evalOp2 Times (IntVal i1) (IntVal i2) = IntVal (i1 * i2)
-evalOp2 Divide (IntVal _) (IntVal 0) = NilVal -- return nil for divide by 0
-evalOp2 Divide (IntVal i1) (IntVal i2) = IntVal (i1 `div` i2)
-evalOp2 _ _ _ = NilVal -- invalid args
+
+evalOp2 :: Member (Effect.Error Value) effs => Bop -> Value -> Value -> Eff effs Value
+evalOp2 Plus (IntVal i1) (IntVal i2) = return $ IntVal (i1 + i2)
+evalOp2 Minus (IntVal i1) (IntVal i2) = return $ IntVal (i1 - i2)
+evalOp2 Times (IntVal i1) (IntVal i2) = return $ IntVal (i1 * i2)
+evalOp2 Divide (IntVal _) (IntVal 0) = throwErrorValue $ IntVal 1 
+evalOp2 Divide (IntVal i1) (IntVal i2) = return $ IntVal (i1 `div` i2)
+evalOp2 _ _ _ = throwErrorValue $ IntVal 2 
 
 {-
 2. Next, modify `evalOp2` and `evalE` above so that they use `throwErrorValue` (defined above) to signal runtime errors
@@ -154,7 +162,7 @@ Now we can run expressions that may throw errors!
 executeE :: Expression -> Store -> (Either Value Value, Store)
 executeE e s = Effect.run $ Effect.runState s (Effect.runError comp)
   where
-    comp = undefined -- replace this with `evalE e`
+    comp = evalE e -- replace this with `evalE e`
 
 {-
 We can display the errors nicely for experimentation in ghci with
@@ -254,6 +262,11 @@ eval (Block ss) = mapM_ evalS ss
 4. Now finish this function for Statement execution. (Check out
   `executeE` for a hint.)
 -}
+
+-- executeE :: Expression -> Store -> (Either Value Value, Store)
+-- executeE e s = Effect.run $ Effect.runState s (Effect.runError comp)
+--   where
+--     comp = evalE e
 
 execute :: Block -> Store -> (Either Value (), Store)
 execute b st = undefined

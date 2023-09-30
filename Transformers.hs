@@ -12,7 +12,7 @@ import Control.Monad (ap, liftM)
 import Data.Function ((&))
 import Data.Kind (Type)
 import State (State)
-import qualified State as S
+import State qualified as S
 
 {-
 How do we use *multiple* monads at once?
@@ -69,7 +69,9 @@ second fails with a divide-by-zero exception.
 -}
 
 -- >>> eval ok
+-- 42
 
+-- divide by zero
 -- >>> eval err
 
 {-
@@ -106,9 +108,37 @@ errorS :: Show a => a -> a -> String
 errorS y m = "Error dividing " ++ show y ++ " by " ++ show m
 
 -- | exception-throwing evaluator
-evalEx :: Expr -> Either String Int
+-- evalEx :: Expr -> Either String Int
+
+-- By switching from the specific code using Left and Right
+-- to the more general (monadic) do-notation, our function has a more
+-- general type! (the overloaded function throwError is what allows
+-- the typechecker to infer the type to be MonadError)
+
+
+-- evalEx :: MonadError String m => Expr -> m Int
 evalEx (Val n) = return n
-evalEx (Div x y) = undefined
+evalEx (Div x y) = do
+  i <- evalEx x
+  j <- evalEx y
+  if j == 0
+    then throwError $ errorS i j
+    else return $ i `div` j
+
+{-
+Alternative implementation using pattern matching:
+evalEx (Div x y) =
+  case evalEx x of
+    Left s -> Left s
+    Right i ->
+      case evalEx y of
+        Left s -> Left s
+        Right j ->
+          if j == 0
+            then Left (errorS i j)
+            else Right (i `div` j)
+
+-}
 
 {-
 When we call this evaluator, we'll format its result into a string using the
@@ -129,11 +159,11 @@ goEx :: Expr -> String
 goEx e =
   evalEx e
     & showEx show -- the `&` operator is reverse application
-
-{-
-This version should return `Result: 42` for the `ok` term and
-`"Raise: Error dividing..."` for `err`.
--}
+    -- "Result: 42"
+    {-
+    This version should return `Result: 42` for the `ok` term and
+    -- "Raise: Error dividing Val 1 by Div (Val 2) (Val 3)"
+    -}
 
 -- >>> goEx ok
 -- "Result: 42"
@@ -171,12 +201,14 @@ tickProf = do
 Now we can write a *profiling* evaluator, and observe it at work.
 -}
 
-evalSt :: Expr -> State Store Int
+-- evalSt :: Expr -> State Store Int
+-- evalSt :: MonadState Int m => Expr -> m Int 
+evalSt :: MonadState Int m => Expr -> m Int
 evalSt (Val n) = return n
 evalSt (Div x y) = do
   m <- evalSt x
   n <- evalSt y
-  tickProf
+  tickMonadState
   return (m `div` n)
 
 {-
@@ -193,11 +225,25 @@ showSt f (v, cnt) = f v ++ ", count: " ++ show cnt
 And put it all together.
 -}
 
+-- Flip takes a function with two arguments & swaps the order
+
+goSt :: Expr -> String
+goSt e = showSt show (S.runState (evalSt e) 0)
+
+{-
+Alternate implementation:
+This implementation emphasizes the "pipeline" nature
+
+The `&` operator is akin to the pipeline |> operator in OCaml
+(this operator comes from the F# langauge, as piping makes it during
+type inference to reason about the type of arguments)
+
 goSt :: Expr -> String
 goSt e =
   evalSt e
     & flip S.runState 0 -- The `&` operator is reverse application
     & showSt show -- It lets us create a short transformation pipeline
+-}
 
 -- >>> goSt ok
 -- "42, count: 2"
@@ -273,6 +319,9 @@ Now see what happens if you change `Left` to `throwError` in the
 evaluator `evalEx` above and remove the type signature.
 What is the new type of the evaluator that GHC infers?
 
+The type signature changes from `Expr -> Either String Int` to 
+`MonadError String m => Expr -> m Int`! 
+
 Similarly, we can bottle the key operations of a *state monad* in a typeclass
 that describes monads equipped with extraction (get) and modification (put)
 functions of appropriate types.
@@ -302,6 +351,9 @@ instance MonadState s (State s) where
 {-
 Now go back and see what happens when you replace `tickProf` with
 `tickMonadState` in `evalSt` above and remove the type signature.
+
+The type signature changes from `Expr -> State Store Int `
+to `MonadState Int m => Expr -> m Int` !
 
 Step 2: Using Monads With Special Features
 ------------------------------------------
@@ -346,13 +398,28 @@ Int`. Make sure that `evalMega` works with your monad.
 newtype Mega a = Mega {runMega :: Int -> Either String (a, Int)}
 
 instance Monad Mega where
+  -- Passes the state along without doing anything to it
   return :: a -> Mega a
-  return x = undefined
+  return x = Mega $ \num -> Right (x, num)
+
   (>>=) :: Mega a -> (a -> Mega b) -> Mega b
-  ma >>= fmb = undefined
+  ma >>= fmb = Mega $ \s -> do
+    (a, s1) <- runMega ma s
+    runMega (fmb a) s1
+
+{-
+Implementation using pattern matching in the Either monad
+ma >>= fmb = Mega $ \num ->
+  case runMega ma num of
+    Left str -> Left str
+    Right (a, newNum) -> runMega (fmb a) newNum
+
+-}
 
 instance Applicative Mega where
   pure = return
+
+  -- Once return and bind are defined, ap is defined
   (<*>) = ap
 
 instance Functor Mega where
@@ -360,11 +427,14 @@ instance Functor Mega where
 
 instance MonadError String Mega where
   throwError :: String -> Mega a
-  throwError str = undefined
+  throwError str = Mega $ \_ -> Left str
 
+-- s = Int, m = Mega
 instance MonadState Int Mega where
-  get = undefined
-  put x = undefined
+  get :: Mega Int
+  get = Mega $ \s -> Right (s, s)
+  put :: Int -> Mega ()
+  put x = Mega $ \s -> Right ((), s)
 
 {-
 Finally, once we have a Mega monad, we can run it and display the result.
@@ -477,6 +547,8 @@ of type `a` and a new store.
 That is, it is not an `m` computation yielding a store transformation.
 Why is this not what we want?)
 
+Note: we don't get access to the store s if the type is m (s -> (a, s))
+
 Next, we declare that the transformer's output is a monad. Again, compare the
 definitions below to that of the `State` monad.
 -}
@@ -508,13 +580,13 @@ instance Monad m => MonadState s (StateT s m) where
   get = MkStateT getIt
     where
       getIt :: s -> m (s, s)
-      getIt s = undefined
+      getIt s = return (s, s)
 
   put :: s -> StateT s m ()
   put s = MkStateT putIt
     where
       putIt :: s -> m ((), s)
-      putIt _ = undefined
+      putIt _ss = return ((), s)
 
 {-
 Where are we now?
@@ -595,6 +667,7 @@ monad:
 -}
 
 instance MonadState s m => MonadState s (ExceptT e m) where
+  -- The `get` on the RHS has type m s, so @lift get@ "converts" it to ExceptT e m s
   get :: ExceptT e m s
   get = lift get
 
@@ -636,6 +709,9 @@ showStEx = showSt (showEx show)
 We can run these interpreters and display their results as follows:
 -}
 
+-- The type annotations are not strictly necessary, but
+-- are included for pedagogical purposes
+
 goExSt :: Expr -> String
 goExSt e =
   (evalExSt e :: StateT Int (Either String) Int)
@@ -676,13 +752,21 @@ monad, and not layered on top of something else?
 
 As alluded to above, we can define an `Identity` monad to use under
 any other.
+
+The identity monad is the most basic monad (it doesn't do anything),
+its the same as the underlying type.
 -}
 
 newtype Id a = MkId a deriving (Show)
 
 instance Monad Id where
-  return x = undefined
-  (MkId p) >>= f = undefined
+  return :: a -> Id a
+  return x = MkId x
+
+  -- p :: a
+  -- f :: a -> Id b
+  (>>=) :: Id a -> (a -> Id b) -> Id b
+  (MkId p) >>= f = f p
 
 instance Applicative Id where
   pure = return
@@ -691,6 +775,7 @@ instance Applicative Id where
 instance Functor Id where
   fmap = liftM
 
+-- Same as the State monad
 type State2 s = StateT s Id -- isomorphic to State s
 
 type Either2 s = ExceptT s Id -- isomorphic to Either s

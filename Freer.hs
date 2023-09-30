@@ -46,15 +46,15 @@ For comparison, we'll also import operations for mutable data and for exceptions
 import Control.Exception (Exception, throwIO)
 import Control.Monad (ap)
 import Control.Monad.Freer (Eff, LastMember, Member)
-import qualified Control.Monad.Freer as Effect
-import qualified Control.Monad.Freer.Error as Effect
-import qualified Control.Monad.Freer.State as Effect
+import Control.Monad.Freer qualified as Effect
+import Control.Monad.Freer.Error qualified as Effect
+import Control.Monad.Freer.State qualified as Effect
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Function ((&))
 import Data.Functor ((<&>))
 import Data.IORef as IO (IORef, newIORef, readIORef, writeIORef)
 import Data.Kind (Type)
-import qualified State as StateMonad
+import State qualified as StateMonad
 
 {-
 Motivating example: How do we use *multiple* monads at once?
@@ -177,7 +177,12 @@ errorS y m = "Error dividing " ++ show y ++ " by " ++ show m
 
 evalEx :: Expr -> Either String Int
 evalEx (Val n) = return n
-evalEx (Div x y) = undefined
+evalEx (Div x y) = do
+  vx <- evalEx x
+  vy <- evalEx y
+  case vy of
+    0 -> Left (errorS vx vy)
+    _ -> return $ vx `div` vy
 
 {-
 Your implementation should return `Right 42` for the `ok` term
@@ -188,7 +193,7 @@ and `Left` with an informative string for `err`.
 -- Right 42
 
 -- >>> evalEx err
--- Left "Error dividing Val 1 by Div (Val 2) (Val 3)"
+-- Left "Error dividing 1 by 0"
 
 {-
 Counting Operations Using the State Monad
